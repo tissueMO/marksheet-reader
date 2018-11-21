@@ -1,3 +1,4 @@
+# coding: UTF-8
 ###############################################################################
 #    マークシートを読み取り、CSVに集計結果を出力します。
 ###############################################################################
@@ -8,6 +9,8 @@ import os
 import sys
 import math
 import argparse
+import pathlib
+from tqdm import tqdm
 
 
 # 読み取り設定
@@ -24,16 +27,16 @@ FLAGS = parser.parse_args()
 
 ##### マーカー画像読み込み
 # マーカー画像をグレースケールで読み込む
-marker = cv2.imread("marker.jpg", 0)
+marker = cv2.imread("image/marker.jpg", 0)
+marker_threshold = FLAGS.threshold   # マーカー点の認識閾値
 
 # マーカーのサイズを保管
 marker_src_width, marker_src_height = marker.shape[::-1]
 print("マーカー原寸サイズ:", "W =", marker_src_width, ", H =", marker_src_height)
 
 # 解像度に合わせてマーカーのサイズを変更
-marker_dest_width, marker_dest_height = (64, 64)
-# marker_dest_width, marker_dest_height = (int(marker_src_height * settings.scan_dpi / settings.marker_dpi), int(marker_src_width * settings.scan_dpi / settings.marker_dpi))
-marker = cv2.resize(marker, (marker_dest_width, marker_dest_height))   # 原寸のまま
+# settings.marker_dest_width, settings.marker_dest_height = (int(marker_src_height * settings.scan_dpi / settings.marker_dpi), int(marker_src_width * settings.scan_dpi / settings.marker_dpi))
+marker = cv2.resize(marker, (settings.marker_dest_width, settings.marker_dest_height))
 print("マーカー認識サイズ:", marker.shape[::-1])
 
 
@@ -49,14 +52,21 @@ def loadMarkSheet(filename):
 	basename = os.path.basename(filename)
 
 	# スキャン画像の取り込み
+	filename = str(pathlib.Path(filename).relative_to(pathlib.Path.cwd()))
 	image = cv2.imread(filename, 0)
+	if image is None:
+		return None
+
+	# スキャン画像を二値化
+	_, image = cv2.threshold(image, settings.gray_threshold, 255, cv2.THRESH_BINARY)
+	# cv2.imwrite(os.path.join(basename + "-scan_bin.jpg"), image)
 
 	# スキャン画像の中からマーカーを抽出
 	res = cv2.matchTemplate(image, marker, cv2.TM_CCOEFF_NORMED)
 	# print(res)
 
 	# 類似度の閾値以上の座標を取り出す
-	loc = np.where(res >= settings.marker_threshold)
+	loc = np.where(res >= marker_threshold)
 	if len(loc) == 0 or len(loc[0]) == 0 or len(loc[1]) == 0:
 		if FLAGS.verbose:
 			print("マーカーの認識に失敗")
@@ -64,16 +74,16 @@ def loadMarkSheet(filename):
 
 	# 認識領域を切り出し
 	mark_area = {}
-	mark_area["top_x"] = min(loc[1])
-	mark_area["top_y"] = min(loc[0])
-	mark_area["bottom_x"] = max(loc[1] + marker_dest_width)
+	mark_area["top_x"] = min(loc[1] + settings.offset_left)
+	mark_area["top_y"] = min(loc[0]) + settings.marker_dest_height + settings.offset_top
+	mark_area["bottom_x"] = max(loc[1])
 	mark_area["bottom_y"] = max(loc[0])
-	print(mark_area)
+	# print(mark_area)
 
 	image = image[mark_area["top_y"] : mark_area["bottom_y"], mark_area["top_x"] : mark_area["bottom_x"]]
 
 	# 切り出した領域を検証用に書き出し
-	cv2.imwrite(os.path.join(basename + "-scan_cropped.jpg"), image)
+	# cv2.imwrite(os.path.join(basename + "-scan_cropped.jpg"), image)
 
 	# 列数、行数ベースでキリのいいサイズにリサイズ
 	image = cv2.resize(image, (settings.n_col * settings.cell_size, settings.total_row * settings.cell_size))
@@ -115,13 +125,14 @@ def recognizeMarkSheet(image, filename):
 		if 0 < row and row < settings.margin_top:
 			# ページ番号行を除く、設問対象にしない余白行
 			continue
-		if 0 < row and not row in settings.p_question_indexes:
+		if 0 < row and not row in settings.p_question_indexes[page_number - 1]:
 			# 設問ではない行
 			continue
 
 		# 処理する行を切り出して 0-1 標準化
-		row_image = image[row * settings.cell_size : (row + 1) * settings.cell_size, ] / 255.0
-		cv2.imwrite(os.path.join(basename + "-row" + str(row) + ".jpg"), image[row * settings.cell_size : (row + 1) * settings.cell_size, ])
+		row_image = image[row * settings.cell_size : (row + 1) * settings.cell_size, ]
+		# cv2.imwrite(os.path.join(basename + "-row" + str(row) + ".jpg"), row_image)
+		row_image = row_image / 255.0
 		area_sum = []	# ここに合計値を入れる
 
 		# 列ごとに走査する
@@ -129,24 +140,25 @@ def recognizeMarkSheet(image, filename):
 			# 各セルの領域について、画像の合計値（＝白い部分の面積）を求める
 			cell_image = row_image[:, col * settings.cell_size : (col + 1) * settings.cell_size]
 			area_sum.append(np.sum(cell_image))
-			# print(cell_image[int(settings.cell_size / 2), int(settings.cell_size / 2)])
 
-		# 各セルの合計値を限界値で割って割合にする
+		# 各セルの合計値を上限値（＝全部塗りつぶしたときの理論値）で割って割合にする
 		area_sum = np.array(area_sum) / (settings.cell_size * settings.cell_size)
 		max = np.max(area_sum)
-		med = np.median(area_sum)
-		# print(max, area_sum)
 
-		# 暫定回答を出す
-		result = area_sum > med * settings.result_threshold_rate
-		result = np.asarray([1 if x == True else 0 for x in result])
+		if max < settings.result_threshold_minrate:
+			# 最大値が閾値を下回っているときは空欄と判断
+			answer_list = np.asarray([])
+		else:
+			# 暫定回答を出す
+			result = area_sum > np.max(np.asarray([max * 0.5, settings.result_threshold_minrate]))
+			result = np.asarray([1 if x == True else 0 for x in result])
+			answer_list = getAnswer(result)
 
 		if row == 0:
 			# ページ番号 (1 origin) として取り出す
-			if max >= settings.result_threshold_minrate:
-				page_number_list = getAnswer(result)
-				if page_number_list.length == 1:
-					page_number = page_number_list[0]
+			page_number_list = answer_list
+			if page_number_list.shape[0] == 1:
+				page_number = page_number_list[0]
 
 			if page_number == 0:
 				# ページ番号が不明だと設問構成も不明なので中断する
@@ -154,12 +166,10 @@ def recognizeMarkSheet(image, filename):
 				return 0, None
 		else:
 			# 回答として取り出す
-			if max >= settings.result_threshold_minrate:
-				# 最大値が閾値を上回っており、かつ、塗りつぶされた部分の面積が中央値の３倍以上かどうかで結果を論理値判定する
-				# print(result)
+			if answer_list.shape[0] > 0:
 				results.append(result)
 			else:
-				# 最大値が閾値を下回っている場合、無効票とする
+				# 未回答
 				results.append([])
 
 	return page_number, results
@@ -187,14 +197,38 @@ if __name__ == '__main__':
 		sys.exit()
 
 	# 集計データのテーブル
+	answers = []
+	answer_tables = []
 	data_sums = []
 	for i in range(settings.n_page):
-		aggregates_columns1 = { "Q-No.": [("Q-" + str(row + 1)) for row in range(n_question)] }
-		aggregates_columns2 = { ("Ans-" + str(col + 1)): [0 for row in range(n_question)] for col in range(settings.n_col) }
-		aggregates_columns = {**aggregates_columns1, **aggregates_columns2}
-		data_sum = pd.DataFrame(aggregates_columns)
-		data_sum = data_sum.ix[:, [item[0] for item in aggregates_columns1.items()] + [item[0] for item in aggregates_columns2.items()]]
+		# このページの設問数を取得
+		n_question = len(settings.p_question_indexes[i])
+
+		aggregates_columns_sum1 = { "Q-No.": [("Q-" + str(row + 1)) for row in range(n_question)] }
+		aggregates_columns_sum2 = { ("Ans-" + str(col + 1)): [0 for row in range(n_question)] for col in range(settings.n_col) }
+		aggregates_columns_sum = {**aggregates_columns_sum1, **aggregates_columns_sum2}
+		data_sum = pd.DataFrame(aggregates_columns_sum)
+		data_sum = data_sum.ix[:, [item[0] for item in aggregates_columns_sum1.items()] + [item[0] for item in aggregates_columns_sum2.items()]]
 		data_sums.append(data_sum)
+
+		# 個別の回答一覧
+		aggregates_columns_person0 = {
+			"ファイル名": [],
+			"ページ番号": [],
+		}
+		aggregates_columns_person1 = { "Q-No.": [] }
+		aggregates_columns_person2 = { ("Ans-" + str(col + 1)): [] for col in range(settings.n_col) }
+		aggregates_columns_person = {**aggregates_columns_person0, **aggregates_columns_person1, **aggregates_columns_person2}
+		answer_table = pd.DataFrame(aggregates_columns_person)
+		answer_table = answer_table.ix[:, (
+			[item[0] for item in aggregates_columns_person0.items()]
+			+ [item[0] for item in aggregates_columns_person1.items()]
+			+ [item[0] for item in aggregates_columns_person2.items()])
+		]
+		answer_tables.append(answer_table)
+
+		# 個別の回答テキスト版
+		answers.append([])
 
 	# 複数回答の一覧
 	multi_ans = pd.DataFrame({
@@ -221,7 +255,8 @@ if __name__ == '__main__':
 
 	# マークシートのスキャン画像を逐一読み取って集計
 	files = os.listdir(FLAGS.imgdir)
-	for file in files:
+	print("マークシート読み取り開始...")
+	for file in tqdm(files):
 		filename = os.path.join(FLAGS.imgdir, file)
 
 		# 現在のファイルに対して回答チェック
@@ -257,21 +292,37 @@ if __name__ == '__main__':
 				)
 				continue
 
+			answers[page_number - 1].append(os.path.basename(filename))
+			answers[page_number - 1].append("")
+
 		# 読み取り結果を集計
 		for row, result in enumerate(results):
 			data = getAnswer(result)
 
+			row_data = [
+				file,
+				page_number,
+				row + 1,
+			]
+			for i in range(settings.n_col):
+				exists = (i in data)
+				row_data.append(exists)
+
+			answer_table_row = pd.Series(row_data, answer_tables[page_number - 1].columns)
+
 			if len(data) == 1:
 				# 単一回答
+				line = "Q-%02d. " % (row + 1) + str(data[0])
 				if FLAGS.verbose:
-					print("Q-%02d. " % (row + 1) + str(data[0]))
+					print(line)
 
 				data_sums[page_number - 1].iat[row, data[0]] = str(int(data_sums[page_number - 1].iat[row, data[0]]) + 1)
+				answers[page_number - 1].append(line)
 
 			elif len(data) > 1:
 				# 複数回答
-				if FLAGS.verbose:
-					print("Q-%02d. " % (row + 1) + str(data) + "  # 複数回答 #")
+				line = "Q-%02d. " % (row + 1) + str(data) + "  # 複数回答 #"
+				print(line)
 
 				multi_ans = multi_ans.append(
 					pd.Series(
@@ -285,11 +336,12 @@ if __name__ == '__main__':
 					),
 					ignore_index = True
 				)
+				answers[page_number - 1].append(line)
 
 			else:
 				# 無回答
-				if FLAGS.verbose:
-					print("Q-%02d. " % (row + 1) + "** 未回答 **")
+				line = "Q-%02d. " % (row + 1) + "** 未回答 **"
+				print(line)
 
 				no_ans = no_ans.append(
 					pd.Series(
@@ -302,11 +354,16 @@ if __name__ == '__main__':
 					),
 					ignore_index = True
 				)
+				answers[page_number - 1].append(line)
+
+			answer_tables[page_number - 1] = answer_tables[page_number - 1].append(answer_table_row, ignore_index = True)
+
+		answers[page_number - 1].append("\n--------------------------------------------------------\n")
 
 	print()
 	print("◆集計結果\n")
 	for i in range(settings.n_page):
-		print("Page:", (i + 1), "\n", data_sums[settings.n_page], "\n")
+		print("Page:", (i + 1), "\n", data_sums[i], "\n")
 	print("◆複数回答\n", multi_ans, "\n")
 	print("◆無回答\n", no_ans, "\n")
 	print("◆認識エラー\n", no_recognize, "\n")
@@ -318,7 +375,12 @@ if __name__ == '__main__':
 		os.mkdir(settings.summary_dir)
 	for i in range(settings.n_page):
 		data_sums[i].to_csv(
-			os.path.join(settings.summary_dir, "aggregates-p" + (i + 1) + ".csv"),
+			os.path.join(settings.summary_dir, "aggregates-p" + str(i + 1) + ".csv"),
+			index = False,
+			encoding = "sjis"
+		)
+		answer_tables[i].to_csv(
+			os.path.join(settings.summary_dir, "answers-p" + str(i + 1) + ".csv"),
 			index = False,
 			encoding = "sjis"
 		)
@@ -337,4 +399,12 @@ if __name__ == '__main__':
 		index = False,
 		encoding = "sjis"
 	)
+
+	# ページごと、ファイルごとの個別回答情報を書き出し
+	for i, answer_page in enumerate(answers):
+		with open(os.path.join(settings.summary_dir, "answers-p" + str(i + 1) + ".txt"), "w") as f:
+			for line in answer_page:
+				f.write(line)
+				f.write("\n")
+
 	print("集計結果を {", settings.summary_dir, "以下 } に書き出しました")

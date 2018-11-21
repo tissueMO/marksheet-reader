@@ -1,1 +1,5 @@
 Thumbs.db
+.vscode
+ftp-sync.json
+launch.json
+__pycache__

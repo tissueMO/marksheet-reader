@@ -1,3 +1,4 @@
+# coding: UTF-8
 ###############################################################################
 #    マークシートの読み取り設定です。
 ###############################################################################
@@ -5,7 +6,6 @@
 ##### マーカー設定
 marker_dpi = 112                    # マーカーサイズ
 scan_dpi = 200                      # スキャン画像の解像度
-marker_threshold = FLAGS.threshold  # マーカー点の認識閾値
 
 
 ##### マークシート設定
@@ -14,12 +14,13 @@ n_row = 32                          # 余白行を除く、マークシートの
 n_page = 2                          # ページ数
 margin_top = 2                      # ページ番号の行を除く、上部余白の行数
 margin_bottom = 1                   # 下部余白の行数
-total_row = 1 + margin_top + n_row + margin_bottom   # ページ番号の行と余白行を含めた全体の行数
+total_row = 1 + margin_top + n_row + margin_bottom   # ページ番号の行・余白行を含めた全体の行数
 cell_size = 100                     # １行１列あたりのサイズ
 gray_threshold = 120                # 二値化の閾値
 result_threshold_minrate = 0.1      # 塗りつぶしていると判断する最小割合の閾値
-result_threshold_rate = 4.0         # 塗りつぶしていると決定する中央値からの倍率
-
+marker_dest_width, marker_dest_height = (40, 40)     # マーカー実質サイズ
+offset_top = 5                      # マーク領域の上端部カット分
+offset_left = 5                     # マーク領域の左端部カット分
 
 ##### 集計設定
 summary_dir = "summary"             # 書き出し先のディレクトリー名
