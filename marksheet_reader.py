@@ -305,7 +305,7 @@ if __name__ == '__main__':
 				row + 1,
 			]
 			for i in range(settings.n_col):
-				exists = (i in data)
+				exists = ((i + 1) in data)
 				row_data.append(exists)
 
 			answer_table_row = pd.Series(row_data, answer_tables[page_number - 1].columns)
