@@ -10,6 +10,10 @@ import math
 import argparse
 
 
+# 読み取り設定
+import settings
+
+
 ##### コマンドライン引数
 parser = argparse.ArgumentParser()
 parser.add_argument("--imgdir", type = str, default = None, help = "スキャンした画像のあるディレクトリーです。")
@@ -18,47 +22,30 @@ parser.add_argument("--threshold", type = float, default = 0.5, help = "マー�
 FLAGS = parser.parse_args()
 
 
-##### マーカー設定
-marker_dpi = 112                    # マーカーサイズ
-scan_dpi = 200                      # スキャン画像の解像度
-marker_threshold = FLAGS.threshold  # マーカー点の認識閾値
-
+##### マーカー画像読み込み
 # マーカー画像をグレースケールで読み込む
 marker = cv2.imread("marker.jpg", 0)
 
 # マーカーのサイズを保管
 marker_src_width, marker_src_height = marker.shape[::-1]
-# print("W =", marker_src_width, ", H =", marker_src_height)
+print("マーカー原寸サイズ:", "W =", marker_src_width, ", H =", marker_src_height)
 
 # 解像度に合わせてマーカーのサイズを変更
 marker_dest_width, marker_dest_height = (64, 64)
-# marker_dest_width, marker_dest_height = (int(marker_src_height * scan_dpi / marker_dpi), int(marker_src_width * scan_dpi / marker_dpi))
-marker = cv2.resize(marker, (marker_dest_width, marker_dest_height))
+# marker_dest_width, marker_dest_height = (int(marker_src_height * settings.scan_dpi / settings.marker_dpi), int(marker_src_width * settings.scan_dpi / settings.marker_dpi))
+marker = cv2.resize(marker, (marker_dest_width, marker_dest_height))   # 原寸のまま
 print("マーカー認識サイズ:", marker.shape[::-1])
 
 
-##### マークシート設定
-n_col = 6                           # マークシートの列数＝一行あたりのマーク数
-n_row = 35                          # マークシートの行数（≠ 項目数）
-# n_question = math.ceil(n_row / 2.0)	# マークシートの項目数（偶数行は空白にする＝行間を空けてマークしやすくする）
-n_question = n_row                  # マークシートの項目数（偶数行は空白にする＝行間を空けてマークしやすくする）
-margin_top = 1                      # 上部余白の行数
-margin_bottom = 1                   # 下部余白の行数
-total_row = n_row + margin_top + margin_bottom   # 余白を含めた行数
-size = 100                          # １行１列あたりのサイズ
-gray_threshold = 120                # 二値化の閾値
-result_threshold_minrate = 0.1      # 塗りつぶしていると判断する最小割合の閾値
-result_threshold_rate = 4.0         # 塗りつぶしていると決定する中央値からの倍率
 
-
-# 集計設定
-summary_dir = "summary"             # 書き出し先のディレクトリー名
-
-
-##### マークシートを読み込み、認識できる状態に整形します。
-# 認識に失敗した場合は None を返します。
 def loadMarkSheet(filename):
-	global marker, n_col, total_row, margin_top, margin_bottom, size, gray_threshold
+	"""マークシートを読み込み、認識できる状態に整形します。
+	認識に失敗した場合は None を返します。
+	Arguments:
+		filename {string} -- ファイル名
+	Returns:
+		Image -- 抽出したマークシート部分の画像
+	"""
 	basename = os.path.basename(filename)
 
 	# スキャン画像の取り込み
@@ -69,7 +56,7 @@ def loadMarkSheet(filename):
 	# print(res)
 
 	# 類似度の閾値以上の座標を取り出す
-	loc = np.where(res >= marker_threshold)
+	loc = np.where(res >= settings.marker_threshold)
 	if len(loc) == 0 or len(loc[0]) == 0 or len(loc[1]) == 0:
 		if FLAGS.verbose:
 			print("マーカーの認識に失敗")
@@ -89,12 +76,12 @@ def loadMarkSheet(filename):
 	cv2.imwrite(os.path.join(basename + "-scan_cropped.jpg"), image)
 
 	# 列数、行数ベースでキリのいいサイズにリサイズ
-	image = cv2.resize(image, (n_col * size, total_row * size))
+	image = cv2.resize(image, (settings.n_col * settings.cell_size, settings.total_row * settings.cell_size))
 
 	# 画像に軽くブラーをかけて２値化し、白黒反転させる（塗りつぶした部分が白く浮き上がる）
 	image = cv2.GaussianBlur(image, (5, 5), 0)
-	# res, image = cv2.threshold(image, gray_threshold, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-	res, image = cv2.threshold(image, gray_threshold, 255, cv2.THRESH_BINARY)
+	# res, image = cv2.threshold(image, settings.gray_threshold, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+	res, image = cv2.threshold(image, settings.gray_threshold, 255, cv2.THRESH_BINARY)
 	image = 255 - image
 
 	# 認識可能な状態の画像を検証用に書き出し
@@ -104,53 +91,91 @@ def loadMarkSheet(filename):
 
 
 
-##### 読み込まれたマークシートをもとに、塗りつぶされた項目の列番号を認識して配列で返します。
-# ここに渡す画像は二値化されており、かつ１行と１列でサイズが等しいことが前提となります。
 def recognizeMarkSheet(image, filename):
-	global n_col, total_row, margin_top, margin_bottom, size
+	"""読み込まれたマークシートをもとに、塗りつぶされた項目の列番号を認識して配列で返します。
+	ここに渡す画像は二値化されており、かつ１行と１列でサイズが等しいことが前提となります。
+	Arguments:
+		image {Image} -- 読み取り対象の画像
+		filename {string} -- ファイル名
+	Returns:
+		int -- ページ番号。読み取れなかった場合は 0 となります
+		Array -- 各設問に対する回答情報の配列を格納した配列
+	"""
 	basename = os.path.basename(filename)
 
+	page_number = 0
 	results = []
 
 	# 塗りつぶしの限界値
-	# area_width, area_height = (size, size)
+	# area_width, area_height = (settings.cell_size, settings.cell_size)
 	# print("塗りつぶし面積最大値:", area_width * area_height)
 
 	# 行ごとに走査する
-	for row in range(margin_top, total_row - margin_bottom):
-		# if row % 2 == 0:
-			# 偶数行は空白にする（行間を空けてマークしやすくする）ため飛ばす
-			# continue
+	for row in range(settings.total_row - settings.margin_bottom):
+		if 0 < row and row < settings.margin_top:
+			# ページ番号行を除く、設問対象にしない余白行
+			continue
+		if 0 < row and not row in settings.p_question_indexes:
+			# 設問ではない行
+			continue
 
 		# 処理する行を切り出して 0-1 標準化
-		row_image = image[row * size : (row + 1) * size, ] / 255.0
-		cv2.imwrite(os.path.join(basename + "-row" + str(row) + ".jpg"), image[row * size : (row + 1) * size, ])
+		row_image = image[row * settings.cell_size : (row + 1) * settings.cell_size, ] / 255.0
+		cv2.imwrite(os.path.join(basename + "-row" + str(row) + ".jpg"), image[row * settings.cell_size : (row + 1) * settings.cell_size, ])
 		area_sum = []	# ここに合計値を入れる
 
 		# 列ごとに走査する
-		for col in range(n_col):
+		for col in range(settings.n_col):
 			# 各セルの領域について、画像の合計値（＝白い部分の面積）を求める
-			cell_image = row_image[:, col * size : (col + 1) * size]
+			cell_image = row_image[:, col * settings.cell_size : (col + 1) * settings.cell_size]
 			area_sum.append(np.sum(cell_image))
-			# print(cell_image[int(size / 2), int(size / 2)])
+			# print(cell_image[int(settings.cell_size / 2), int(settings.cell_size / 2)])
 
 		# 各セルの合計値を限界値で割って割合にする
-		area_sum = np.array(area_sum) / (size * size)
+		area_sum = np.array(area_sum) / (settings.cell_size * settings.cell_size)
 		max = np.max(area_sum)
 		med = np.median(area_sum)
 		# print(max, area_sum)
 
-		if max >= result_threshold_minrate:
-			# 最大値が閾値を上回っており、かつ、塗りつぶされた部分の面積が中央値の３倍以上かどうかで結果を論理値判定する
-			result = area_sum > med * result_threshold_rate
-			result = np.asarray([1 if x == True else 0 for x in result])
-			# print(result)
-			results.append(result)
-		else:
-			# 最大値が閾値を下回っている場合、無効票とする
-			results.append([])
+		# 暫定回答を出す
+		result = area_sum > med * settings.result_threshold_rate
+		result = np.asarray([1 if x == True else 0 for x in result])
 
-	return results
+		if row == 0:
+			# ページ番号 (1 origin) として取り出す
+			if max >= settings.result_threshold_minrate:
+				page_number_list = getAnswer(result)
+				if page_number_list.length == 1:
+					page_number = page_number_list[0]
+
+			if page_number == 0:
+				# ページ番号が不明だと設問構成も不明なので中断する
+				print("ページ番号不明:", filename)
+				return 0, None
+		else:
+			# 回答として取り出す
+			if max >= settings.result_threshold_minrate:
+				# 最大値が閾値を上回っており、かつ、塗りつぶされた部分の面積が中央値の３倍以上かどうかで結果を論理値判定する
+				# print(result)
+				results.append(result)
+			else:
+				# 最大値が閾値を下回っている場合、無効票とする
+				results.append([])
+
+	return page_number, results
+
+
+
+def getAnswer(result):
+	"""塗りつぶしのデータから、回答を取り出します。
+	Arguments:
+		results {Array} -- 各設問に対する塗りつぶしの有無
+	Returns:
+		Array -- 回答番号 (1 origin)
+	"""
+	data = np.where(result == 1)[0] + 1
+	data = data.astype(np.uint8)
+	return data
 
 
 
@@ -162,32 +187,37 @@ if __name__ == '__main__':
 		sys.exit()
 
 	# 集計データのテーブル
-	aggregates_columns1 = { "Q-No.": [("Q-" + str(row + 1)) for row in range(n_question)] }
-	aggregates_columns2 = { ("Ans-" + str(col + 1)): [0 for row in range(n_question)] for col in range(n_col) }
-	aggregates_columns = {**aggregates_columns1, **aggregates_columns2}
-	data_sum = pd.DataFrame(aggregates_columns)
-	data_sum = data_sum.ix[:, [item[0] for item in aggregates_columns1.items()] + [item[0] for item in aggregates_columns2.items()]]
+	data_sums = []
+	for i in range(settings.n_page):
+		aggregates_columns1 = { "Q-No.": [("Q-" + str(row + 1)) for row in range(n_question)] }
+		aggregates_columns2 = { ("Ans-" + str(col + 1)): [0 for row in range(n_question)] for col in range(settings.n_col) }
+		aggregates_columns = {**aggregates_columns1, **aggregates_columns2}
+		data_sum = pd.DataFrame(aggregates_columns)
+		data_sum = data_sum.ix[:, [item[0] for item in aggregates_columns1.items()] + [item[0] for item in aggregates_columns2.items()]]
+		data_sums.append(data_sum)
 
 	# 複数回答の一覧
 	multi_ans = pd.DataFrame({
 		"ファイル名": [],
+		"ページ番号": [],
 		"設問番号": [],
 		"答え？": [],
 	})
-	multi_ans = multi_ans.ix[:, ["ファイル名", "設問番号", "答え？"]]
+	multi_ans = multi_ans.ix[:, ["ファイル名", "ページ番号", "設問番号", "答え？"]]
 
 	# 未回答の一覧
 	no_ans = pd.DataFrame({
 		"ファイル名": [],
+		"ページ番号": [],
 		"設問番号": [],
 	})
-	no_ans = no_ans.ix[:, ["ファイル名", "設問番号"]]
+	no_ans = no_ans.ix[:, ["ファイル名", "ページ番号", "設問番号"]]
 
 	# 読み取りエラーの一覧
 	no_recognize = pd.DataFrame({
 		"ファイル名": [],
 	})
-	no_recognize = no_recognize.ix[:, ["ファイル名"]]
+	no_recognize = no_recognize.ix[:, ["ファイル名",]]
 
 	# マークシートのスキャン画像を逐一読み取って集計
 	files = os.listdir(FLAGS.imgdir)
@@ -212,19 +242,31 @@ if __name__ == '__main__':
 			continue
 		else:
 			# マーク読み取り実行
-			results = recognizeMarkSheet(image, filename)
+			page_number, results = recognizeMarkSheet(image, filename)
+
+			if page_number == 0:
+				# ページ番号が無効
+				no_recognize = no_recognize.append(
+					pd.Series(
+						[
+							file
+						],
+						index = no_recognize.columns
+					),
+					ignore_index = True
+				)
+				continue
 
 		# 読み取り結果を集計
 		for row, result in enumerate(results):
-			data = np.where(result == 1)[0] + 1
-			data = data.astype(np.uint8)
+			data = getAnswer(result)
 
 			if len(data) == 1:
 				# 単一回答
 				if FLAGS.verbose:
 					print("Q-%02d. " % (row + 1) + str(data[0]))
 
-				data_sum.iat[row, data[0]] = str(int(data_sum.iat[row, data[0]]) + 1)
+				data_sums[page_number - 1].iat[row, data[0]] = str(int(data_sums[page_number - 1].iat[row, data[0]]) + 1)
 
 			elif len(data) > 1:
 				# 複数回答
@@ -235,6 +277,7 @@ if __name__ == '__main__':
 					pd.Series(
 						[
 							file,
+							page_number,
 							int(row + 1),
 							str(data),
 						],
@@ -252,6 +295,7 @@ if __name__ == '__main__':
 					pd.Series(
 						[
 							file,
+							page_number,
 							int(row + 1),
 						],
 						index = no_ans.columns
@@ -260,7 +304,9 @@ if __name__ == '__main__':
 				)
 
 	print()
-	print("◆集計結果\n", data_sum, "\n")
+	print("◆集計結果\n")
+	for i in range(settings.n_page):
+		print("Page:", (i + 1), "\n", data_sums[settings.n_page], "\n")
 	print("◆複数回答\n", multi_ans, "\n")
 	print("◆無回答\n", no_ans, "\n")
 	print("◆認識エラー\n", no_recognize, "\n")
@@ -268,26 +314,27 @@ if __name__ == '__main__':
 
 
 	# 集計データをCSVに出力
-	if os.path.isdir(summary_dir) == False:
-		os.mkdir(summary_dir)
-	data_sum.to_csv(
-		os.path.join(summary_dir, "aggregates.csv"),
-		index = False,
-		encoding = "sjis"
-	)
+	if os.path.isdir(settings.summary_dir) == False:
+		os.mkdir(settings.summary_dir)
+	for i in range(settings.n_page):
+		data_sums[i].to_csv(
+			os.path.join(settings.summary_dir, "aggregates-p" + (i + 1) + ".csv"),
+			index = False,
+			encoding = "sjis"
+		)
 	multi_ans.to_csv(
-		os.path.join(summary_dir, "multiple_answers.csv"),
+		os.path.join(settings.summary_dir, "multiple_answers.csv"),
 		index = False,
 		encoding = "sjis"
 	)
 	no_ans.to_csv(
-		os.path.join(summary_dir, "nothing_answers.csv"),
+		os.path.join(settings.summary_dir, "nothing_answers.csv"),
 		index = False,
 		encoding = "sjis"
 	)
 	no_recognize.to_csv(
-		os.path.join(summary_dir, "no_recognized.csv"),
+		os.path.join(settings.summary_dir, "no_recognized.csv"),
 		index = False,
 		encoding = "sjis"
 	)
-	print("集計結果を {", summary_dir, "以下 } に書き出しました")
+	print("集計結果を {", settings.summary_dir, "以下 } に書き出しました")
