@@ -1,3 +1,4 @@
+# coding: utf-8
 ###############################################################################
 #    処理時間を計測するモジュールです。
 ###############################################################################
@@ -69,11 +70,10 @@ class Logger():
             self._create_log_text(level_prefix="I", message=message)
         )
 
-    def log_warn(self, code, message: str):
+    def log_warn(self, message: str):
         """警告ログを出力します。
 
         Arguments:
-            code {str} -- メッセージコード
             message {str} -- メッセージ内容
         """
         self._logger.warning(
@@ -84,7 +84,6 @@ class Logger():
         """エラーログを出力します。
 
         Arguments:
-            code {str} -- メッセージコード
             message {str} -- メッセージ内容
         """
         self._logger.error(

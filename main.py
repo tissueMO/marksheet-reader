@@ -1,3 +1,4 @@
+# coding: utf-8
 ###############################################################################
 #    マークシートを読み取り、CSVに集計結果を出力します。
 ###############################################################################
@@ -23,7 +24,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument(
     "--imgdir",
     type=str,
-    default=None,
+    default="./sample",
     help="スキャンした画像のあるディレクトリーを指定して下さい。"
 )
 parser.add_argument(
@@ -42,26 +43,29 @@ COMMANDLINE_OPTIONS = parser.parse_args()
 
 if __name__ == "__main__":
     logger = Logger("__main__")
-    reader = MarksheetReader(
-        COMMANDLINE_OPTIONS.threshold,
-        COMMANDLINE_OPTIONS.verbose
-    )
+    reader = MarksheetReader(COMMANDLINE_OPTIONS.threshold)
 
     # コマンドライン引数チェック
     if COMMANDLINE_OPTIONS.imgdir is None \
             or not os.path.isdir(COMMANDLINE_OPTIONS.imgdir):
         logger.log_error("--imgdir [必須] 取り込む画像が含まれるディレクトリーを指定して下さい")
         sys.exit()
+    logger.log_info(
+        f"コマンドライン引数" +
+        f" :imgdir={COMMANDLINE_OPTIONS.imgdir}" +
+        f" :verbose={COMMANDLINE_OPTIONS.verbose}" +
+        f" :threshold={COMMANDLINE_OPTIONS.threshold}"
+    )
 
     # 集計データのテーブル
     answers = []
     answer_tables = []
     data_sums = []
-    n_page = len(reader.p_question_indexes)
+    n_page = len(reader.p_question_indices)
 
     for i in range(n_page):
         # このページの設問数を取得
-        n_question = len(reader.p_question_indexes[i])
+        n_question = len(reader.p_question_indices[i])
 
         aggregates_columns_sum1 = {
             "Q-No.": [
@@ -214,7 +218,7 @@ if __name__ == "__main__":
             elif len(data) > 1:
                 # 複数回答
                 line = "Q-%02d. " % (row + 1) + str(data) + "  # 複数回答 #"
-                logger.log_debug(line)
+                logger.log_warn(line)
 
                 multi_ans = multi_ans.append(
                     pd.Series(
@@ -233,7 +237,7 @@ if __name__ == "__main__":
             else:
                 # 無回答
                 line = "Q-%02d. " % (row + 1) + "** 未回答 **"
-                logger.log_debug(line)
+                logger.log_warn(line)
 
                 no_ans = no_ans.append(
                     pd.Series(
@@ -254,19 +258,17 @@ if __name__ == "__main__":
 
         answers[page_number - 1].append("\n--------------------------------\n")
 
-    logger.log_debug("")
-    logger.log_debug("◆集計結果\n")
-    for i in range(reader.n_page):
-        logger.log_debug("Page:", (i + 1), "\n", data_sums[i], "\n")
-    logger.log_debug("◆複数回答\n", multi_ans, "\n")
-    logger.log_debug("◆無回答\n", no_ans, "\n")
-    logger.log_debug("◆認識エラー\n", no_recognize, "\n")
-    logger.log_debug("")
+    logger.log_debug("\n◆集計結果\n")
+    for i in range(n_page):
+        logger.log_debug(f"Page:{i + 1}\n{data_sums[i]}\n")
+    logger.log_debug(f"◆複数回答\n{multi_ans}\n")
+    logger.log_debug(f"◆無回答\n{no_ans}\n")
+    logger.log_debug(f"◆認識エラー\n{no_recognize}\n\n")
 
     # 集計データをCSVに出力
     if not os.path.isdir(reader.summary_dir):
         os.mkdir(reader.summary_dir)
-    for i in range(reader.n_page):
+    for i in range(n_page):
         data_sums[i].to_csv(
             os.path.join(
                 reader.summary_dir, "aggregates-p" + str(i + 1) + ".csv"
@@ -308,4 +310,4 @@ if __name__ == "__main__":
                 f.write(line)
                 f.write("\n")
 
-    logger.log_info("集計結果を {", reader.summary_dir, "以下 } に書き出しました")
+    logger.log_info(f"集計結果を {reader.summary_dir} 以下 に書き出しました")
