@@ -16,10 +16,12 @@ from typing import Any, Dict, List, Tuple, List
 # 独自モジュール
 from logger import Logger
 
+# 定数定義
+MARKER_PATH = "./image/marker.jpg"
 
 # 設定ファイル読み込み
 config = ConfigParser()
-config.read("settings.conf", encoding="utf-8")
+config.read("./config/settings.conf", encoding="utf-8")
 
 
 class MarksheetReader():
@@ -40,7 +42,7 @@ class MarksheetReader():
         self.verbose = verbose
 
         # マーカー画像をグレースケールで読み込む
-        self.marker = cv2.imread("image/marker.jpg", cv2.IMREAD_GRAYSCALE)
+        self.marker = cv2.imread(MARKER_PATH, cv2.IMREAD_GRAYSCALE)
         if self.marker is None:
             self.logger.log_error("マーカー画像を cv2.imread できませんでした。画像形式を確認して下さい")
 

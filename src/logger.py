@@ -10,7 +10,7 @@ from logging import config
 
 
 # ログ出力設定ロード
-config.fileConfig("logging.conf")
+config.fileConfig("./config/logging.conf")
 
 
 class Logger():
