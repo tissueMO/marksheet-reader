@@ -26,16 +26,18 @@ class MarksheetReader():
     """マークシートの読み込みを行うクラスです。
     """
 
-    def __init__(self, threshold: float):
+    def __init__(self, threshold: float, verbose: bool):
         """コンストラクター
 
         Arguments:
             threshold {float} -- マーカー点の認識閾値
+            verbose {bool} -- 読取精度の微調整に使用するためのログや画像を出力するかどうか
         """
         self.logger = Logger("MarksheetReader")
 
         # 引数からオプションをセット
         self.marker_threshold = threshold
+        self.verbose = verbose
 
         # マーカー画像をグレースケールで読み込む
         self.marker = cv2.imread("image/marker.jpg", cv2.IMREAD_GRAYSCALE)
@@ -61,11 +63,18 @@ class MarksheetReader():
     def _load_settings(self):
         """各種設定値を読み込んでメンバー変数に格納します。
         """
+        # ログ設定
+        self.log_dir = config.get("log", "log_dir")
+        os.makedirs(self.log_dir, exist_ok=True)
+
         # マーカー設定
         self.marker_dpi = config.getint("marker", "marker_dpi")
         self.scan_dpi = config.getint("marker", "scan_dpi")
 
         # マークシート設定
+        self.supported_extensions = json.loads(
+            config.get("marksheet", "supported_extensions")
+        )
         self.n_col = config.getint("marksheet", "n_col")
         self.n_row = config.getint("marksheet", "n_row")
         self.margin_top = json.loads(config.get("marksheet", "margin_top"))
@@ -103,6 +112,12 @@ class MarksheetReader():
             np.ndarray -- 抽出したマークシート部分の画像
         """
         basename = os.path.basename(filename)
+        _, ext = os.path.splitext(basename)
+        if ext not in self.supported_extensions:
+            self.logger.log_error(
+                f"対応していない拡張子です。設定を変えるか形式を変更して下さい :basename={basename}"
+            )
+            return None
 
         # スキャン画像の取り込み
         image = cv2.imread(filename, cv2.IMREAD_GRAYSCALE)
@@ -119,7 +134,12 @@ class MarksheetReader():
             255,
             cv2.THRESH_BINARY
         )
-        self.logger.log_debug(f"二値化した画像:\n{image}")
+        if self.verbose:
+            self.logger.log_debug(f"二値化した画像サイズ:\n{image.shape}")
+            self.logger.log_debug(f"二値化した画像:\n{image}")
+            cv2.imwrite(
+                os.path.join(self.log_dir, basename + "-scan_bin.jpg"), image
+            )
 
         # スキャン画像の中からマーカーを抽出
         res = cv2.matchTemplate(image, self.marker, cv2.TM_CCOEFF_NORMED)
@@ -147,17 +167,24 @@ class MarksheetReader():
             mark_area["top_y"]:mark_area["bottom_y"],
             mark_area["top_x"]:mark_area["bottom_x"]
         ]
-        self.logger.log_debug(f"抽出後の画像:\n{image}")
         self.logger.log_debug(f"抽出パラメーター :mark_area={mark_area}")
+        if self.verbose:
+            self.logger.log_debug(f"抽出後の画像サイズ:\n{image.shape}")
+            self.logger.log_debug(f"抽出後の画像:\n{image}")
+            cv2.imwrite(
+                os.path.join(self.log_dir, basename + "-scan_cropped.jpg"),
+                image
+            )
+        if True in [x < 200 for x in image.shape[:2]]:
+            self.logger.log_error(f"切り出した画像が小さすぎる :basename={basename}")
+            return None
 
         # 列数、行数ベースでキリのいいサイズにリサイズ
         dest_size = (
             self.n_col * self.cell_size,
             self.total_row * self.cell_size
         )
-        self.logger.log_debug(f"リサイズ後のサイズ: {dest_size}")
         image = cv2.resize(image, dest_size)
-        self.logger.log_debug(f"リサイズ後の画像:\n{image}")
 
         # 画像に軽くブラーをかけて、白黒反転させる（塗りつぶした部分が白く浮き上がる）
         image = cv2.GaussianBlur(image, self.blur_strength, 0)
@@ -199,7 +226,16 @@ class MarksheetReader():
 
             # 処理する行を切り出して 0-1 標準化
             row_image = image[
-                row * self.cell_size: (row + 1) * self.cell_size, ]
+                row * self.cell_size: (row + 1) * self.cell_size,
+            ]
+            if self.verbose:
+                cv2.imwrite(
+                    os.path.join(
+                        self.log_dir,
+                        basename + "-row" + str(row) + ".jpg"
+                    ),
+                    row_image
+                )
             row_image = row_image / 255.0
             area_sum = []    # ここに合計値を入れる
 
